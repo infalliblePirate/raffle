@@ -3,7 +3,7 @@ import 'solidity-coverage';
 import { HardhatUserConfig } from 'hardhat/config';
 
 import '@nomicfoundation/hardhat-toolbox';
-import { getAlchemySepoliaUrl } from './helpers/alchemy.helpers';
+import { getAlchemyMainnetUrl } from './helpers/alchemy.helpers';
 
 dotenv.config();
 
@@ -22,15 +22,22 @@ const ETHERSCAN_API_KEY = getEnvVar('ETHERSCAN_API_KEY');
 const config: HardhatUserConfig = {
   solidity: '0.8.28',
   networks: {
-    sepolia: {
-      chainId: 11155111,
-      url: getAlchemySepoliaUrl(ALCHEMY_API_KEY),
-      accounts: [PRIVATE_KEY],
-    }
-  },
-  etherscan: {
-    apiKey: ETHERSCAN_API_KEY,
+
+    hardhat: {
+      forking: {
+        url: getAlchemyMainnetUrl(ALCHEMY_API_KEY), // Alchemy mainnet RPC
+        blockNumber: 18000000, // optional: snapshot block for deterministic state
+      },
+      accounts: [
+        {
+          privateKey: PRIVATE_KEY,
+          balance: '1000000000000000000000',
+        },
+      ],
+      initialBaseFeePerGas: 0, // for fork testing
+    },
   },
 };
+
 
 export default config;
