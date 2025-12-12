@@ -1,0 +1,18 @@
+{
+  "weth": {
+    "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "feed": "0x5f4ec3df9cbd43714fe2740f5e3616155c5b8419"
+  },
+  "dai": {
+    "address": "0x6b175474e89094c44da98b954eedeac495271d0f",
+    "feed": "0xaed0c38402a5d19df6e4c03f4e2dced6e29c1ee9"
+  },
+  "link": {
+    "address": "0x514910771af9ca656af840dff83e8264ecf986ca",
+    "feed": "0x2c1d072e956affc0d435cb7ac38ef18d24d9127c"
+  },
+  "uni": {
+    "address": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984",
+    "feed": "0x553303d460ee0afb37edff9be42922d8ff63220e"
+  }
+}
