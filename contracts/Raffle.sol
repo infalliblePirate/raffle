@@ -8,6 +8,13 @@ import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.so
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 
 contract Raffle is Ownable, VRFConsumerBaseV2 {
+
+    uint32 public constant MAX_SUPPORTED_TOKENS = 1000;
+    uint32 public constant MAX_PARTICIPATED_USERS = 1000;
+
+    uint32 public supportedTokensCount;
+    uint8 public MIN_PARTICIPATION_USD_DEPOSIT = 10;
+
     uint256 gameId;
     mapping(uint256 => uint256) public poolUSD;
     mapping(uint256 => address[]) public users;
@@ -55,6 +62,16 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
     }
 
     function addTokenFeed(address token, address feed) external onlyOwner {
+        bool isNew = _tokenFeeds[token] == address(0);
+
+        if (isNew) {
+            require(
+                supportedTokensCount < MAX_SUPPORTED_TOKENS,
+                "Max token limit reached"
+            );
+            supportedTokensCount++;
+        }
+
         _tokenFeeds[token] = feed;
     }
 
@@ -93,8 +110,10 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
         tokenBalances[gameId][token] += amount;
 
         uint256 usdValue = _getTokenValueInUSD(token, amount);
+        require(usdValue >= MIN_PARTICIPATION_USD_DEPOSIT, "Usd tokens equivalent must be >= 10$");
 
         if (!_hasParticipated[gameId][msg.sender]) {
+            require(users[gameId].length - 1 < MAX_PARTICIPATED_USERS, "User limit per round reached");
             users[gameId].push(msg.sender);
             _hasParticipated[gameId][msg.sender] = true;
         }
@@ -178,7 +197,7 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
                 recipient: address(this),
                 deadline: block.timestamp,
                 amountIn: amount,
-                amountOutMinimum: amount * 95 / 100, // 5% slippage
+                amountOutMinimum: (amount * 95) / 100, // 5% slippage
                 sqrtPriceLimitX96: 0
             });
 
