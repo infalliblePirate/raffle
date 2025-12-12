@@ -7,21 +7,19 @@ import "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2Mock.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 contract Raffle is Ownable, VRFConsumerBaseV2 {
+
+    struct GameState {
+        uint256 poolUSD;
+        address[] users;
+        bool isEnded;
+    }
+    GameState public gameState;
+
+    uint256 gameId;
+    mapping(uint256 => mapping(address => bool)) private _hasParticipated; // gameId -> user -> bool
+    mapping(uint256 => mapping(address => uint256)) public userPoolUSD;
+
     mapping(address => address) private _tokenFeeds;
-
-    address[] public playedTokens;
-    address[] public participatedUsers;
-
-    mapping(address => uint256) public tokenBalances;
-    mapping(address => mapping(address => uint256)) // todo: maybe move to struct
-        public userDepositedBalances;
-    mapping(address => uint256) public usersPerToken;
-
-    uint256 public poolUSD;
-    mapping(address => uint256) public userPoolUSD;
-
-//
-    mapping(address => bool) private _hasParticipated;
 
     VRFCoordinatorV2Mock public vrfCoordinator;
 
@@ -84,28 +82,15 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
 
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 
-        if (tokenBalances[token] == 0) {
-            playedTokens.push(token);
-        }
-
         uint256 usdValue = _getTokenValueInUSD(token, amount);
 
-        if (!_hasParticipated[msg.sender]) {
-            participatedUsers.push(msg.sender);
-            _hasParticipated[msg.sender] = true;
-            usersPerToken[token]++;
+        if (!_hasParticipated[gameId][msg.sender]) {
+            gameState.users.push(msg.sender);
+            _hasParticipated[gameId][msg.sender] = true;
         }
 
-        userPoolUSD[msg.sender] += usdValue;
-        poolUSD += usdValue;
-
-        // tokenBalances[token] += amount;
-
-        // if (userDepositedBalances[msg.sender][token] == 0) {
-        //     usersPerToken[token] += 1;
-        //     participatedUsers.push(msg.sender);
-        // }
-        // userDepositedBalances[msg.sender][token] += amount;
+        userPoolUSD[gameId][msg.sender] += usdValue;
+        gameState.poolUSD += usdValue;
 
         emit Deposit(msg.sender, token, amount);
     }
@@ -125,15 +110,15 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
     }
 
     function findWinner() public returns (address) {
-        if (poolUSD == 0) revert NoPoolValue();
+        if (gameState.poolUSD == 0) revert NoPoolValue();
 
         requestRandom();
-        uint256 winnningPoint = randomResult % poolUSD;
+        uint256 winnningPoint = randomResult % gameState.poolUSD;
 
         uint256 sum = 0;
 
-        for (uint256 i = 0; i < participatedUsers.length; ++i) { // todo: change it to have max users
-            address user = participatedUsers[i];
+        for (uint256 i = 0; i < gameState.users.length; ++i) { // todo: change it to have max users
+            address user = gameState.users[i];
             sum += userPoolUSD[user];
 
             if (winnningPoint < sum) return user;
