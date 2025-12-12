@@ -10,12 +10,13 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
 
     struct GameState {
         uint256 poolUSD;
-        address[] users;
         bool isEnded;
+        uint256 startTime;
     }
     GameState public gameState;
 
     uint256 gameId;
+    mapping(uint256 => address[]) users;
     mapping(uint256 => mapping(address => bool)) private _hasParticipated; // gameId -> user -> bool
     mapping(uint256 => mapping(address => uint256)) public userPoolUSD;
 
@@ -85,7 +86,7 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
         uint256 usdValue = _getTokenValueInUSD(token, amount);
 
         if (!_hasParticipated[gameId][msg.sender]) {
-            gameState.users.push(msg.sender);
+            users[gameId].push(msg.sender);
             _hasParticipated[gameId][msg.sender] = true;
         }
 
@@ -117,9 +118,9 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
 
         uint256 sum = 0;
 
-        for (uint256 i = 0; i < gameState.users.length; ++i) { // todo: change it to have max users
-            address user = gameState.users[i];
-            sum += userPoolUSD[user];
+        for (uint256 i = 0; i < users[gameId].length; ++i) { // todo: change it to have max users
+            address user = users[gameId][i];
+            sum += userPoolUSD[gameId][user];
 
             if (winnningPoint < sum) return user;
         }
