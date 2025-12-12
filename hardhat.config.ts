@@ -17,7 +17,6 @@ function getEnvVar(name: string): string {
 
 const ALCHEMY_API_KEY = getEnvVar('ALCHEMY_API_KEY');
 const PRIVATE_KEY = getEnvVar('PRIVATE_KEY');
-const ETHERSCAN_API_KEY = getEnvVar('ETHERSCAN_API_KEY');
 
 const config: HardhatUserConfig = {
   solidity: '0.8.28',
@@ -25,8 +24,8 @@ const config: HardhatUserConfig = {
 
     hardhat: {
       forking: {
-        url: getAlchemyMainnetUrl(ALCHEMY_API_KEY), // Alchemy mainnet RPC
-        blockNumber: 18000000, // optional: snapshot block for deterministic state
+        url: getAlchemyMainnetUrl(ALCHEMY_API_KEY),
+        blockNumber: 18000000,
       },
       accounts: [
         {
