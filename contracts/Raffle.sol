@@ -4,14 +4,24 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2Mock.sol";
+import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 contract Raffle is Ownable, VRFConsumerBaseV2 {
     mapping(address => address) private _tokenFeeds;
 
     address[] public playedTokens;
+    address[] public participatedUsers;
+
     mapping(address => uint256) public tokenBalances;
-    mapping(address => mapping(address => uint256))
+    mapping(address => mapping(address => uint256)) // todo: maybe move to struct
         public userDepositedBalances;
+    mapping(address => uint256) public usersPerToken;
+
+    uint256 public poolUSD;
+    mapping(address => uint256) public userPoolUSD;
+
+//
+    mapping(address => bool) private _hasParticipated;
 
     VRFCoordinatorV2Mock public vrfCoordinator;
 
@@ -23,6 +33,10 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
 
     error NotSupportedToken();
     error ZeroAmount();
+    error InvalidPrice();
+    error PriceStale();
+    error NoWinnerFound();
+    error NoPoolValue();
 
     event Deposit(
         address indexed sender,
@@ -73,13 +87,62 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
         if (tokenBalances[token] == 0) {
             playedTokens.push(token);
         }
-        tokenBalances[token] += amount;
-        userDepositedBalances[msg.sender][token] += amount;
+
+        uint256 usdValue = _getTokenValueInUSD(token, amount);
+
+        if (!_hasParticipated[msg.sender]) {
+            participatedUsers.push(msg.sender);
+            _hasParticipated[msg.sender] = true;
+            usersPerToken[token]++;
+        }
+
+        userPoolUSD[msg.sender] += usdValue;
+        poolUSD += usdValue;
+
+        // tokenBalances[token] += amount;
+
+        // if (userDepositedBalances[msg.sender][token] == 0) {
+        //     usersPerToken[token] += 1;
+        //     participatedUsers.push(msg.sender);
+        // }
+        // userDepositedBalances[msg.sender][token] += amount;
 
         emit Deposit(msg.sender, token, amount);
     }
 
-    function selectWinner() external {
+    function _getTokenValueInUSD(address token, uint256 amount) internal view returns (uint256) {
+        AggregatorV3Interface feed = AggregatorV3Interface(_tokenFeeds[token]);
+
+        (, int256 price, , uint256 updatedAt, ) = feed.latestRoundData();
+
+        if (price <= 0) revert InvalidPrice();
+        if (block.timestamp - updatedAt > 1 hours) revert PriceStale();
+
+        uint8 feedDec = feed.decimals();
+        uint256 normalizedPrice = uint256(price) * (10 ** (18 - feedDec));
+
+        return (amount * normalizedPrice) / 1e18;
+    }
+
+    function findWinner() public returns (address) {
+        if (poolUSD == 0) revert NoPoolValue();
+
+        requestRandom();
+        uint256 winnningPoint = randomResult % poolUSD;
+
+        uint256 sum = 0;
+
+        for (uint256 i = 0; i < participatedUsers.length; ++i) { // todo: change it to have max users
+            address user = participatedUsers[i];
+            sum += userPoolUSD[user];
+
+            if (winnningPoint < sum) return user;
+        }
+
+        revert NoWinnerFound();
+    }
+
+    function requestRandom() public onlyOwner {
         lastRequestId = vrfCoordinator.requestRandomWords(
             keyHash,
             subscriptionId,
@@ -95,8 +158,9 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
         subscriptionId = subId;
     }
 
+    // callback used by vpf coordinator
     function fulfillRandomWords(
-        uint256 requestId,
+        uint256,
         uint256[] memory randomWords
     ) internal virtual override {
         randomResult = randomWords[0];
