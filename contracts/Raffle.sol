@@ -8,6 +8,8 @@ import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.so
 import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 
+interface IWETH { function withdraw(uint256) external; } // to unwrap weth to eth
+
 contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
 
     uint32 public constant MAX_SUPPORTED_TOKENS = 100;
@@ -185,7 +187,7 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         _endGameInternal();
     }
 
-    function _endGameInternal() internal {
+    function _endGameInternal() internal { // todo: add nonreentrant
         address winner = findWinner();
         uint256 currGameId = gameId;
 
@@ -203,6 +205,7 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         gameId++;
         gameStart[gameId] = block.timestamp;
 
+        IWETH(WETH).withdraw(totalETH);
         (bool success, ) = payable(winner).call{value: totalETH}("");
         require(success, "Winner transfer failed");
 
@@ -261,7 +264,7 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         uint256,
         uint256[] memory randomWords
     ) internal virtual override {
-        randomResult = randomWords[0];
+        randomResult = randomWords[0]; // todo: add requestId to fix race condition
     }
 
     function checkUpkeep(
