@@ -5,23 +5,34 @@ import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2Mock.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 
-contract Raffle is Ownable, VRFConsumerBaseV2 {
+contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
 
-    uint32 public constant MAX_SUPPORTED_TOKENS = 1000;
-    uint32 public constant MAX_PARTICIPATED_USERS = 1000;
+    uint32 public constant MAX_SUPPORTED_TOKENS = 100;
+    uint32 public constant MAX_PARTICIPATED_USERS = 100;
 
     uint32 public supportedTokensCount;
-    uint8 public MIN_PARTICIPATION_USD_DEPOSIT = 10;
+    uint8 public MIN_PARTICIPATION_USD_DEPOSIT = 10; // can be omitted, just to minimize flooding with low amounts
+
+    // keeper config (triggers)
+    bool public automationEnabled;
+    uint256 public minUsersToTrigger = 100;
+    uint256 public maxGameDuration = 24 hours;
+    uint256 public minPoolUSDToTrigger = 10_000 * 1e18; 
 
     uint256 gameId;
     mapping(uint256 => uint256) public poolUSD;
     mapping(uint256 => address[]) public users;
-    mapping(uint256 => mapping(address => bool)) private _hasParticipated; // gameId -> user -> bool
+    mapping(uint256 => mapping(address => bool)) private _hasParticipated;
     mapping(uint256 => mapping(address => uint256)) public userPoolUSD;
     mapping(uint256 => mapping(address => uint256)) public tokenBalances;
     mapping(uint256 => address[]) public playedTokens;
+
+    // for keepers
+    mapping(uint256 => uint256) public gameStart;
+    mapping(uint256 => bool) public randomRequestedForGame;
 
     mapping(address => address) private _tokenFeeds;
 
@@ -51,14 +62,19 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
     );
     event WinnerSelected(address winner, uint256 winnerPrize);
     event GameEnded(uint256 indexed gameId, address winner, uint256 totalETH);
+    event AutomationTriggered(uint8 action, string reason, uint256 gameId);
 
     constructor(
         address vrfCoordinator_,
-        bytes32 keyHash,
+        bytes32 keyHash_,
         address swapRouter_
     ) VRFConsumerBaseV2(vrfCoordinator_) Ownable(msg.sender) {
         vrfCoordinator = VRFCoordinatorV2Mock(vrfCoordinator_);
+        keyHash = keyHash_;
         swapRouter = ISwapRouter(swapRouter_);
+
+        gameId = 0;
+        gameStart[gameId] = block.timestamp;
     }
 
     function addTokenFeed(address token, address feed) external onlyOwner {
@@ -110,10 +126,16 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
         tokenBalances[gameId][token] += amount;
 
         uint256 usdValue = _getTokenValueInUSD(token, amount);
-        require(usdValue >= MIN_PARTICIPATION_USD_DEPOSIT, "Usd tokens equivalent must be >= 10$");
+        require(
+            usdValue >= MIN_PARTICIPATION_USD_DEPOSIT,
+            "Usd tokens equivalent must be >= 10$"
+        );
 
         if (!_hasParticipated[gameId][msg.sender]) {
-            require(users[gameId].length - 1 < MAX_PARTICIPATED_USERS, "User limit per round reached");
+            require(
+                users[gameId].length < MAX_PARTICIPATED_USERS,
+                "User limit per round reached"
+            );
             users[gameId].push(msg.sender);
             _hasParticipated[gameId][msg.sender] = true;
         }
@@ -141,7 +163,7 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
         return (amount * normalizedPrice) / 1e18;
     }
 
-    // must have requestRandomn called previously (otherwise predictable random)
+    // must have requestRandom called previously (otherwise predictable random)
     function findWinner() public view returns (address) {
         if (poolUSD[gameId] == 0) revert NoPoolValue();
 
@@ -149,8 +171,7 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
 
         uint256 sum = 0;
         address[] memory gameUsers = users[gameId];
-        for (uint256 i = 0; i < gameUsers.length; ++i) {
-            // todo: change it to have max users
+        for (uint32 i = 0; i < gameUsers.length; ++i) {
             address user = gameUsers[i];
             sum += userPoolUSD[gameId][user];
 
@@ -161,26 +182,32 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
     }
 
     function endGame() external onlyOwner {
+        _endGameInternal();
+    }
+
+    function _endGameInternal() internal {
         address winner = findWinner();
+        uint256 currGameId = gameId;
 
         uint256 totalETH = 0;
-        address[] memory tokens = playedTokens[gameId];
+        address[] memory tokens = playedTokens[currGameId];
 
         for (uint8 i = 0; i < tokens.length; ++i) {
             address token = tokens[i];
-            uint256 balance = tokenBalances[gameId][token];
+            uint256 balance = tokenBalances[currGameId][token];
 
             uint256 ethReceived = _swapTokensForETH(token, balance);
             totalETH += ethReceived;
         }
 
-        gameId++; // reset game
+        gameId++;
+        gameStart[gameId] = block.timestamp;
 
         (bool success, ) = payable(winner).call{value: totalETH}("");
         require(success, "Winner transfer failed");
 
         emit WinnerSelected(winner, totalETH);
-        emit GameEnded(gameId, winner, totalETH);
+        emit GameEnded(currGameId, winner, totalETH);
     }
 
     function _swapTokensForETH(
@@ -207,6 +234,12 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
     }
 
     function requestRandom() public onlyOwner {
+        _requestRandomInternal();
+    }
+
+    function _requestRandomInternal() internal {
+        if (randomRequestedForGame[gameId]) return;
+
         lastRequestId = vrfCoordinator.requestRandomWords(
             keyHash,
             subscriptionId,
@@ -214,6 +247,9 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
             100000,
             1
         );
+
+        randomRequestedForGame[gameId] = true;
+        emit AutomationTriggered(1, "random_requested", gameId);
     }
 
     function setSubscription(uint64 subId) external onlyOwner {
@@ -226,6 +262,70 @@ contract Raffle is Ownable, VRFConsumerBaseV2 {
         uint256[] memory randomWords
     ) internal virtual override {
         randomResult = randomWords[0];
+    }
+
+    function checkUpkeep(
+        bytes calldata /* checkData */
+    ) external view override returns (bool upkeepNeeded, bytes memory performData) {
+        if (!automationEnabled) return (false, bytes(""));
+
+        uint256 gid = gameId;
+        uint256 currentPool = poolUSD[gid];
+        uint256 userCount = users[gid].length;
+        uint256 elapsed = block.timestamp - gameStart[gid];
+
+        // if randomRequested not invoked yet and any trigger meets -> request randomness
+        if (!randomRequestedForGame[gid]) {
+            bool userThreshold = userCount >= minUsersToTrigger;
+            bool timeThreshold = elapsed >= maxGameDuration;
+            bool poolThreshold = currentPool >= minPoolUSDToTrigger;
+            if (userThreshold) {
+                return (true, abi.encode(uint8(1), "users_threshold"));
+            }
+            if (timeThreshold) {
+                return (true, abi.encode(uint8(1), "time_threshold"));
+            }
+            if (poolThreshold) {
+                return (true, abi.encode(uint8(1), "pool_threshold"));
+            }
+            return (false, bytes(""));
+        }
+
+        // if randomness was requested and VRF produced a randomResult -> end game
+        if (randomRequestedForGame[gid] && randomResult != 0) {
+            return (true, abi.encode(uint8(2), "random_ready"));
+        }
+
+        return (false, bytes(""));
+    }
+
+    function performUpkeep(bytes calldata performData) external override {
+        require(automationEnabled, "Automation disabled");
+
+        (uint8 action, bytes memory reasonBytes) = abi.decode(performData, (uint8, bytes));
+        if (action == 1) {
+            _requestRandomInternal();
+            emit AutomationTriggered(1, string(reasonBytes), gameId);
+        } else if (action == 2) {
+            _endGameInternal();
+            emit AutomationTriggered(2, string(reasonBytes), gameId);
+        } else {
+            revert("Unknown upkeep action");
+        }
+    }
+
+    function setAutomationEnabled(bool enabled) external onlyOwner {
+        automationEnabled = enabled;
+    }
+
+    function setAutomationConfig(
+        uint256 minUsers,
+        uint256 maxDuration,
+        uint256 minPoolUSD
+    ) external onlyOwner {
+        minUsersToTrigger = minUsers;
+        maxGameDuration = maxDuration;
+        minPoolUSDToTrigger = minPoolUSD;
     }
 
     receive() external payable {}
