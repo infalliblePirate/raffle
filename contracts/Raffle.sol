@@ -8,9 +8,24 @@ import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.so
 import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 
-interface IWETH { function withdraw(uint256) external; } // to unwrap weth to eth
+interface IWETH {
+    function withdraw(uint256) external;
+} // to unwrap weth to eth
 
 contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
+    enum GameState {
+        Active,
+        RandomRequested,
+        Ended
+    }
+
+    struct UserWinningRange {
+        address user;
+        uint256 min;
+        uint256 max;
+    }
+
+    mapping(uint256 => UserWinningRange[]) public winningRanges;
 
     uint32 public constant MAX_SUPPORTED_TOKENS = 100;
     uint32 public constant MAX_PARTICIPATED_USERS = 100;
@@ -22,19 +37,22 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
     bool public automationEnabled;
     uint256 public minUsersToTrigger = 100;
     uint256 public maxGameDuration = 24 hours;
-    uint256 public minPoolUSDToTrigger = 10_000 * 1e18; 
+    uint256 public minPoolUSDToTrigger = 10_000 * 1e18;
 
     uint256 gameId;
     mapping(uint256 => uint256) public poolUSD;
     mapping(uint256 => address[]) public users;
     mapping(uint256 => mapping(address => bool)) private _hasParticipated;
-    mapping(uint256 => mapping(address => uint256)) public userPoolUSD;
     mapping(uint256 => mapping(address => uint256)) public tokenBalances;
     mapping(uint256 => address[]) public playedTokens;
+    mapping(uint256 => address) public winner;
+    mapping(uint256 => GameState) public gameState;
+
+    mapping(uint256 => uint256) public randomResult;
+    mapping(uint256 => uint256) public gameIdForRequest;
 
     // for keepers
     mapping(uint256 => uint256) public gameStart;
-    mapping(uint256 => bool) public randomRequestedForGame;
 
     mapping(address => address) private _tokenFeeds;
 
@@ -43,18 +61,17 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
     uint64 public subscriptionId;
     bytes32 public keyHash;
 
-    uint256 public lastRequestId;
-    uint256 public randomResult;
-
     ISwapRouter public swapRouter;
     address public WETH;
 
     error NotSupportedToken();
     error ZeroAmount();
+    error NoActiveRound();
     error InvalidPrice();
     error PriceStale();
-    error NoWinnerFound();
+    error IncorrectWinner();
     error NoPoolValue();
+    error SwapFailed();
 
     event Deposit(
         address indexed sender,
@@ -62,9 +79,19 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         uint256 tokenAmount,
         uint256 usdValue
     );
-    event WinnerSelected(address winner, uint256 winnerPrize);
-    event GameEnded(uint256 indexed gameId, address winner, uint256 totalETH);
+    event GameEnded(uint256 indexed gameId, address winner);
     event AutomationTriggered(uint8 action, string reason, uint256 gameId);
+    event WinnerClaimed(
+        uint256 indexed gameId,
+        address winner,
+        address token,
+        uint256 amount
+    );
+    event GameStateChanged(
+        uint256 gameId,
+        GameState oldState,
+        GameState newState
+    );
 
     constructor(
         address vrfCoordinator_,
@@ -77,6 +104,7 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
 
         gameId = 0;
         gameStart[gameId] = block.timestamp;
+        gameState[gameId] = GameState.Active;
     }
 
     function addTokenFeed(address token, address feed) external onlyOwner {
@@ -106,6 +134,9 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         }
         if (_tokenFeeds[token] == address(0)) {
             revert NotSupportedToken();
+        }
+        if (gameState[gameId] != GameState.Active) {
+            revert NoActiveRound();
         }
 
         try
@@ -142,7 +173,11 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
             _hasParticipated[gameId][msg.sender] = true;
         }
 
-        userPoolUSD[gameId][msg.sender] += usdValue;
+        winningRanges[gameId].push(UserWinningRange(
+            msg.sender,
+            poolUSD[gameId],
+            poolUSD[gameId] + usdValue
+        ));
         poolUSD[gameId] += usdValue;
 
         emit Deposit(msg.sender, token, amount, usdValue);
@@ -165,58 +200,53 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         return (amount * normalizedPrice) / 1e18;
     }
 
-    // must have requestRandom called previously (otherwise predictable random)
-    function findWinner() public view returns (address) {
-        if (poolUSD[gameId] == 0) revert NoPoolValue();
+    function selectWinner(uint256 index) internal view returns (address) {
+        uint256 gid = gameId;
+        require(
+            randomResult[gid] == 0 && poolUSD[gid] == 0,
+            "incorrect conditions"
+        );
 
-        uint256 winnningPoint = randomResult % poolUSD[gameId];
+        uint256 winningPoint = randomResult[gid] % poolUSD[gid];
+        UserWinningRange memory range = winningRanges[gid][index];
 
-        uint256 sum = 0;
-        address[] memory gameUsers = users[gameId];
-        for (uint32 i = 0; i < gameUsers.length; ++i) {
-            address user = gameUsers[i];
-            sum += userPoolUSD[gameId][user];
-
-            if (winnningPoint < sum) return user;
-        }
-
-        revert NoWinnerFound();
+        require(
+            winningPoint >= range.min && winningPoint < range.max,
+            "incorrect winner idx"
+        );
+        return range.user;
     }
 
-    function endGame() external onlyOwner {
-        _endGameInternal();
+    function endGame(uint256 index) external onlyOwner {
+        require(_canTriggerGame(), "Game ending conditions not met");
+        _endGameInternal(index);
     }
 
-    function _endGameInternal() internal { // todo: add nonreentrant
-        address winner = findWinner();
-        uint256 currGameId = gameId;
+    function _endGameInternal(uint256 index) internal {
+        uint256 gid = gameId;
+        require(gameState[gid] == GameState.RandomRequested, "invalid state");
 
-        uint256 totalETH = 0;
-        address[] memory tokens = playedTokens[currGameId];
+        winner[gid] = selectWinner(index);
 
-        for (uint8 i = 0; i < tokens.length; ++i) {
-            address token = tokens[i];
-            uint256 balance = tokenBalances[currGameId][token];
-
-            uint256 ethReceived = _swapTokensForETH(token, balance);
-            totalETH += ethReceived;
-        }
+        _changeGameState(gid, GameState.Ended);
+        emit GameEnded(gid, winner[gid]);
 
         gameId++;
         gameStart[gameId] = block.timestamp;
-
-        IWETH(WETH).withdraw(totalETH);
-        (bool success, ) = payable(winner).call{value: totalETH}("");
-        require(success, "Winner transfer failed");
-
-        emit WinnerSelected(winner, totalETH);
-        emit GameEnded(currGameId, winner, totalETH);
+        gameState[gameId] = GameState.Active;
     }
 
-    function _swapTokensForETH(
-        address token,
-        uint256 amount
-    ) internal returns (uint256) {
+    function claimWinningEth(uint256 gameId_, address token) public {
+        require(gameState[gameId_] == GameState.Ended, "Game not ended");
+        require(msg.sender == winner[gameId_], "Not the winner");
+
+        uint256 tokenAmount = tokenBalances[gameId_][token];
+        tokenBalances[gameId_][token] = 0;
+        _swapTokensForETH(token, tokenAmount);
+        emit WinnerClaimed(gameId_, msg.sender, token, tokenAmount);
+    }
+
+    function _swapTokensForETH(address token, uint256 amount) internal {
         IERC20(token).approve(address(swapRouter), amount);
 
         ISwapRouter.ExactInputSingleParams memory params = ISwapRouter
@@ -231,19 +261,31 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
                 sqrtPriceLimitX96: 0
             });
 
-        uint256 ethReceived = swapRouter.exactInputSingle(params);
-        require(ethReceived > 0, "Swap failed");
-        return ethReceived;
+        uint256 wethReceived = swapRouter.exactInputSingle(params);
+
+        IWETH(WETH).withdraw(wethReceived);
+
+        (bool success, ) = msg.sender.call{value: wethReceived}("");
+        require(success, "Transfer failed");
     }
 
     function requestRandom() public onlyOwner {
+        require(_canTriggerGame(), "Conditions not met");
         _requestRandomInternal();
     }
 
-    function _requestRandomInternal() internal {
-        if (randomRequestedForGame[gameId]) return;
+    function _changeGameState(uint256 gid, GameState newState) internal {
+        GameState oldState = gameState[gid];
+        gameState[gid] = newState;
+        emit GameStateChanged(gid, oldState, newState);
+    }
 
-        lastRequestId = vrfCoordinator.requestRandomWords(
+    function _requestRandomInternal() internal {
+        uint256 gid = gameId;
+        if (randomResult[gid] != 0) return;
+        require(gameState[gid] == GameState.Active, "Game not active");
+
+        uint256 requestId = vrfCoordinator.requestRandomWords(
             keyHash,
             subscriptionId,
             2,
@@ -251,8 +293,10 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
             1
         );
 
-        randomRequestedForGame[gameId] = true;
-        emit AutomationTriggered(1, "random_requested", gameId);
+        gameIdForRequest[requestId] = gid;
+
+        _changeGameState(gid, GameState.RandomRequested);
+        emit AutomationTriggered(1, "random_requested", gid);
     }
 
     function setSubscription(uint64 subId) external onlyOwner {
@@ -261,56 +305,75 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
 
     // callback used by vpf coordinator
     function fulfillRandomWords(
-        uint256,
+        uint256 requestId,
         uint256[] memory randomWords
     ) internal virtual override {
-        randomResult = randomWords[0]; // todo: add requestId to fix race condition
+        uint256 targetGameId = gameIdForRequest[requestId];
+        randomResult[targetGameId] = randomWords[0];
     }
 
     function checkUpkeep(
-        bytes calldata /* checkData */
-    ) external view override returns (bool upkeepNeeded, bytes memory performData) {
+        bytes calldata checkData
+    )
+        external
+        view
+        override
+        returns (bool upkeepNeeded, bytes memory performData)
+    {
         if (!automationEnabled) return (false, bytes(""));
 
         uint256 gid = gameId;
-        uint256 currentPool = poolUSD[gid];
-        uint256 userCount = users[gid].length;
-        uint256 elapsed = block.timestamp - gameStart[gid];
 
-        // if randomRequested not invoked yet and any trigger meets -> request randomness
-        if (!randomRequestedForGame[gid]) {
-            bool userThreshold = userCount >= minUsersToTrigger;
-            bool timeThreshold = elapsed >= maxGameDuration;
-            bool poolThreshold = currentPool >= minPoolUSDToTrigger;
-            if (userThreshold) {
-                return (true, abi.encode(uint8(1), "users_threshold"));
-            }
-            if (timeThreshold) {
-                return (true, abi.encode(uint8(1), "time_threshold"));
-            }
-            if (poolThreshold) {
-                return (true, abi.encode(uint8(1), "pool_threshold"));
+        if (randomResult[gid] == 0) {
+            if (_canTriggerGame()) {
+                return (
+                    true,
+                    abi.encode(
+                        uint8(1),
+                        uint256(0),
+                        "valid_end_game_conditions"
+                    )
+                );
             }
             return (false, bytes(""));
         }
 
-        // if randomness was requested and VRF produced a randomResult -> end game
-        if (randomRequestedForGame[gid] && randomResult != 0) {
-            return (true, abi.encode(uint8(2), "random_ready"));
+        if (randomResult[gameId] != 0 && winner[gid] == address(0)) {
+            uint256 index = abi.decode(checkData, (uint256));
+            require(index < winningRanges[gid].length, "invalid checkData");
+            return (
+                true,
+                abi.encode(uint8(2), uint256(index), "random_winner_ready")
+            );
         }
 
         return (false, bytes(""));
     }
 
+    function _canTriggerGame() internal view returns (bool) {
+        uint256 gid = gameId;
+        uint256 userCount = users[gid].length;
+        uint256 elapsed = block.timestamp - gameStart[gid];
+        uint256 currentPool = poolUSD[gid];
+
+        return
+            userCount >= minUsersToTrigger ||
+            elapsed >= maxGameDuration ||
+            currentPool >= minPoolUSDToTrigger;
+    }
+
     function performUpkeep(bytes calldata performData) external override {
         require(automationEnabled, "Automation disabled");
 
-        (uint8 action, bytes memory reasonBytes) = abi.decode(performData, (uint8, bytes));
+        (uint8 action, uint256 index, bytes memory reasonBytes) = abi.decode(
+            performData,
+            (uint8, uint256, bytes)
+        );
         if (action == 1) {
             _requestRandomInternal();
             emit AutomationTriggered(1, string(reasonBytes), gameId);
         } else if (action == 2) {
-            _endGameInternal();
+            _endGameInternal(index);
             emit AutomationTriggered(2, string(reasonBytes), gameId);
         } else {
             revert("Unknown upkeep action");
