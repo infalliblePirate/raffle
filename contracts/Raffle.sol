@@ -8,6 +8,8 @@ import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.so
 import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 
+import "hardhat/console.sol";
+
 interface IWETH {
     function withdraw(uint256) external;
 } // to unwrap weth to eth
@@ -39,7 +41,7 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
     uint256 public maxGameDuration = 24 hours;
     uint256 public minPoolUSDToTrigger = 10_000 * 1e18;
 
-    uint256 gameId;
+    uint256 public gameId;
     mapping(uint256 => uint256) public poolUSD;
     mapping(uint256 => address[]) public users;
     mapping(uint256 => mapping(address => bool)) private _hasParticipated;
@@ -92,6 +94,8 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         GameState oldState,
         GameState newState
     );
+
+    uint256 public lastRequestId;
 
     constructor(
         address vrfCoordinator_,
@@ -173,11 +177,13 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
             _hasParticipated[gameId][msg.sender] = true;
         }
 
-        winningRanges[gameId].push(UserWinningRange(
-            msg.sender,
-            poolUSD[gameId],
-            poolUSD[gameId] + usdValue
-        ));
+        winningRanges[gameId].push(
+            UserWinningRange(
+                msg.sender,
+                poolUSD[gameId],
+                poolUSD[gameId] + usdValue
+            )
+        );
         poolUSD[gameId] += usdValue;
 
         emit Deposit(msg.sender, token, amount, usdValue);
@@ -188,22 +194,23 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         uint256 amount
     ) internal view returns (uint256) {
         AggregatorV3Interface feed = AggregatorV3Interface(_tokenFeeds[token]);
-
-        (, int256 price, , uint256 updatedAt, ) = feed.latestRoundData();
-
-        if (price <= 0) revert InvalidPrice();
-        if (block.timestamp - updatedAt > 1 hours) revert PriceStale(); // todo: can vary
-
+        (, int256 price, , , ) = feed.latestRoundData();
         uint8 feedDec = feed.decimals();
         uint256 normalizedPrice = uint256(price) * (10 ** (18 - feedDec));
+        uint256 usdValue = (amount * normalizedPrice) / 1e18;
 
-        return (amount * normalizedPrice) / 1e18;
+        // console.log("amount:", amount);
+        // console.log("normalizedPrice:", normalizedPrice);
+        // console.log("usdValue:", usdValue);
+        // console.log("price:", uint256(price));
+
+        return usdValue;
     }
 
     function selectWinner(uint256 index) internal view returns (address) {
         uint256 gid = gameId;
         require(
-            randomResult[gid] == 0 && poolUSD[gid] == 0,
+            randomResult[gid] != 0 && poolUSD[gid] > 0,
             "incorrect conditions"
         );
 
@@ -292,6 +299,7 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
             100000,
             1
         );
+        lastRequestId = requestId;
 
         gameIdForRequest[requestId] = gid;
 
@@ -323,19 +331,15 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         if (!automationEnabled) return (false, bytes(""));
 
         uint256 gid = gameId;
+        if (!_canTriggerGame()) {
+            return (false, bytes(""));
+        }
 
         if (randomResult[gid] == 0) {
-            if (_canTriggerGame()) {
-                return (
-                    true,
-                    abi.encode(
-                        uint8(1),
-                        uint256(0),
-                        "valid_end_game_conditions"
-                    )
-                );
-            }
-            return (false, bytes(""));
+            return (
+                true,
+                abi.encode(uint8(1), uint256(0), "valid_end_game_conditions")
+            );
         }
 
         if (randomResult[gameId] != 0 && winner[gid] == address(0)) {
@@ -392,6 +396,20 @@ contract Raffle is VRFConsumerBaseV2, AutomationCompatibleInterface, Ownable {
         minUsersToTrigger = minUsers;
         maxGameDuration = maxDuration;
         minPoolUSDToTrigger = minPoolUSD;
+    }
+
+    function getWinningRanges(
+        uint256 gameId
+    ) external view returns (UserWinningRange[] memory) {
+        return winningRanges[gameId];
+    }
+
+    function getUsers(uint256 gameId) external view returns (address[] memory) {
+        return users[gameId];
+    }
+
+    function setWETH(address weth) external {
+        WETH = weth;
     }
 
     receive() external payable {}

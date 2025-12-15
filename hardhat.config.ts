@@ -27,12 +27,13 @@ const config: HardhatUserConfig = {
         url: getAlchemyMainnetUrl(ALCHEMY_API_KEY),
         blockNumber: 18000000,
       },
-      accounts: [
-        {
-          privateKey: PRIVATE_KEY,
-          balance: '1000000000000000000000',
-        },
-      ],
+      accounts: { count: 10 },
+      // accounts: [
+      //   {
+      //     privateKey: PRIVATE_KEY,
+      //     balance: '1000000000000000000000',
+      //   },
+      // ],
       initialBaseFeePerGas: 0, // for fork testing
     },
   },
