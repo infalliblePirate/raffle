@@ -121,7 +121,7 @@ contract DaoRaffle is
     error NoPoolValue();
     error SwapFailed();
 
-    event GovernanceTransfered(address oldGov, address newGovernance);
+    event GovernanceTransferred(address oldGov, address newGovernance);
     event FeePercentagedUpdated(
         uint8 platformFeePercent,
         uint8 founderFeePercent,
@@ -153,9 +153,19 @@ contract DaoRaffle is
     );
 
     constructor(
-        uint256 subscriptionId_
+        uint256 subscriptionId_,
+        address governance_,
+        address platformAddress_,
+        address founderAddress_
     ) VRFConsumerBaseV2Plus(coordinatorAddr) {
+        if (governance_ == address(0)) revert ZeroAddress();
+
         subscriptionId = subscriptionId_;
+        governance = governance_;
+        platformAddress = platformAddress_;
+        founderAddress = founderAddress_;
+
+        emit GovernanceTransferred(address(0), governance_);
     }
 
     modifier onlyGovernance() {
@@ -169,7 +179,7 @@ contract DaoRaffle is
         address oldGov = governance;
         governance = newGovernance;
 
-        emit GovernanceTransfered(oldGov, newGovernance);
+        emit GovernanceTransferred(oldGov, newGovernance);
     }
 
     function setFeePercentages(
