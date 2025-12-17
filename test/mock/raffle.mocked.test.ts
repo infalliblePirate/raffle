@@ -2,7 +2,7 @@ import { time } from '@nomicfoundation/hardhat-network-helpers';
 import { expect } from "chai";
 import { ethers } from "hardhat";
 import {
-    Raffle,
+    MockRaffle,
     MockERC20,
     MockV3Aggregator,
     MockWETH,
@@ -11,8 +11,8 @@ import {
 } from "../../typechain-types";
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 
-describe("Raffle", function () {
-    let raffle: Raffle;
+describe("RaffleMock", function () {
+    let raffle: MockRaffle;
     let vrfCoordinator: VRFCoordinatorV2Mock;
     let token1: MockERC20;
     let token2: MockERC20;
@@ -100,11 +100,11 @@ describe("Raffle", function () {
         await swapRouter.waitForDeployment();
         assertAddress("SwapRouter", swapRouter.target);
 
-        const RaffleFactory = await ethers.getContractFactory("Raffle");
+        const RaffleFactory = await ethers.getContractFactory("MockRaffle");
         raffle = await RaffleFactory.deploy(
-            vrfCoordinator.target,
+            vrfCoordinator,
             keyHash,
-            swapRouter.target
+            swapRouter
         );
         await raffle.waitForDeployment();
         assertAddress("Raffle", raffle.target);
@@ -152,20 +152,20 @@ describe("Raffle", function () {
         await token2.mint(user3, mintAmount);
     });
 
-    describe("Initial State", function () {
-        it("Should initialize with correct state", async function () {
+    describe("initial State", function () {
+        it("should initialize with correct state", async function () {
             expect(await raffle.gameId()).to.equal(0n);
             expect(await raffle.gameState(0)).to.equal(0);
             expect(await raffle.poolUSD(0)).to.equal(0n);
         });
 
-        it("Should have correct owner", async function () {
+        it("should have correct owner", async function () {
             expect(await raffle.owner()).to.equal(owner.address);
         });
     });
 
-    describe("Deposits", function () {
-        it("Should accept single deposit", async function () {
+    describe("deposits", function () {
+        it("should accept single deposit", async function () {
             const amount = "0.1";
 
             await expect(deposit(user1, token1, amount))
@@ -181,10 +181,10 @@ describe("Raffle", function () {
             expect(await raffle.tokenBalances(0, token1)).to.equal(ethers.parseEther(amount));
         });
 
-        it("Should accept multiple deposits from different users", async function () {
+        it("should accept multiple deposits from different users", async function () {
             await deposit(user1, token1, "0.1"); // 100
             await deposit(user2, token1, "0.2"); // 200
-            await deposit(user3, token2, "0.05"); // 50
+            await deposit(user3, token2, "0.05"); // 100
 
             expect(await raffle.poolUSD(0)).to.equal(ethers.parseEther("400"));
 
@@ -192,7 +192,7 @@ describe("Raffle", function () {
             expect(users.length).to.equal(3);
         });
 
-        it("Should allow same user to deposit multiple times", async function () {
+        it("should allow same user to deposit multiple times", async function () {
             await deposit(user1, token1, "0.1"); // 100
             await deposit(user1, token1, "0.1"); // 100
 
@@ -205,7 +205,7 @@ describe("Raffle", function () {
             expect(ranges.length).to.equal(2);
         });
 
-        it("Should revert on zero amount", async function () {
+        it("should revert on zero amount", async function () {
             await token1.connect(user1).approve(raffle, ethers.parseEther("1"));
 
             await expect(
@@ -213,7 +213,7 @@ describe("Raffle", function () {
             ).to.be.revertedWithCustomError(raffle, "ZeroAmount");
         });
 
-        it("Should revert on unsupported token", async function () {
+        it("should revert on unsupported token", async function () {
             const UnsupportedToken = await ethers.getContractFactory("MockERC20");
             const unsupported = await UnsupportedToken.deploy();
 
@@ -225,7 +225,7 @@ describe("Raffle", function () {
             ).to.be.revertedWithCustomError(raffle, "NotSupportedToken");
         });
 
-        it("Should revert deposits after random requested", async function () {
+        it("should revert deposits after random requested", async function () {
             await deposit(user1, token1, "0.1");
             await raffle.requestRandom();
 
@@ -236,8 +236,8 @@ describe("Raffle", function () {
     });
 
 
-    describe("Complete Game Flow", function () {
-        it("Should complete full game cycle", async function () {
+    describe("complete game flow", function () {
+        it("should complete full game cycle", async function () {
             await deposit(user1, token1, "0.1"); // 100
             await deposit(user2, token1, "0.2"); // 200
 
@@ -264,7 +264,7 @@ describe("Raffle", function () {
             expect(await raffle.gameState(1)).to.equal(0); // active
         });
 
-        it("Should run multiple games sequentially", async function () {
+        it("should run multiple games sequentially", async function () {
             await deposit(user1, token1, "0.1");
             await raffle.requestRandom();
             await fulfillRandomWords((Number(await raffle.lastRequestId())), 111);
@@ -283,14 +283,14 @@ describe("Raffle", function () {
             expect(await raffle.gameState(1)).to.equal(2);
         });
 
-        it("Should revert end game without random", async function () {
+        it("should revert end game without random", async function () {
             await deposit(user1, token1, "0.1");
             await raffle.requestRandom();
 
             await expect(raffle.endGame(0)).to.be.revertedWith("incorrect conditions");
         });
 
-        it("Should revert end game with wrong index", async function () {
+        it("should revert end game with wrong index", async function () {
             await deposit(user1, token1, "0.1"); // [0, 100)
             await deposit(user2, token1, "0.3"); // [100, 400)
 
@@ -307,7 +307,7 @@ describe("Raffle", function () {
 
     describe("VRF race condition protection (won't happen but just in case)", function () {
 
-        it("Should track multiple requests correctly", async function () {
+        it("should track multiple requests correctly", async function () {
             await deposit(user1, token1, "0.1");
             await raffle.requestRandom();
             const requestId0 = await raffle.lastRequestId();
@@ -324,24 +324,24 @@ describe("Raffle", function () {
         });
     });
 
-    describe("Chainlink keeper", function () {
+    describe("chainlink keeper", function () {
         beforeEach(async function () {
             await raffle.setAutomationEnabled(true);
         });
 
-        it("Should return false when automation disabled", async function () {
+        it("should return false when automation disabled", async function () {
             await raffle.setAutomationEnabled(false);
             const [upkeepNeeded] = await raffle.checkUpkeep("0x");
             expect(upkeepNeeded).to.be.false;
         });
 
-        it("Should return false when no conditions met", async function () {
+        it("should return false when no conditions met", async function () {
             const [upkeepNeeded] = await raffle.checkUpkeep("0x");
             expect(upkeepNeeded).to.be.false;
         });
 
-        describe("Trigger conditions", function () {
-            it("Should trigger on user threshold", async function () {
+        describe("trigger conditions", function () {
+            it("should trigger on user threshold", async function () {
                 await raffle.setAutomationConfig(2, 24 * 3600, ethers.parseEther("10000"));
 
                 await deposit(user1, token1, "0.1");
@@ -357,7 +357,7 @@ describe("Raffle", function () {
                 expect(action).to.equal(1);
             });
 
-            it("Should trigger on time threshold", async function () {
+            it("should trigger on time threshold", async function () {
                 await deposit(user1, token1, "0.1");
 
                 await time.increase(25 * 3600);
@@ -372,7 +372,7 @@ describe("Raffle", function () {
                 expect(action).to.equal(1);
             });
 
-            it("Should trigger on pool threshold", async function () {
+            it("should trigger on pool threshold", async function () {
                 await raffle.setAutomationConfig(100, 24 * 3600, ethers.parseEther("100"));
 
                 await deposit(user1, token1, "0.2");
@@ -383,7 +383,7 @@ describe("Raffle", function () {
         });
 
         describe("upkeep: request random", function () {
-            it("Should request random via automation", async function () {
+            it("should request random via automation", async function () {
                 await raffle.setAutomationConfig(2, 24 * 3600, ethers.parseEther("10000"));
 
                 await deposit(user1, token1, "0.1");
@@ -398,7 +398,7 @@ describe("Raffle", function () {
                 expect(await raffle.gameState(0)).to.equal(1);
             });
 
-            it("Should not request random twice", async function () {
+            it("should not request random twice", async function () {
                 await raffle.setAutomationConfig(2, 24 * 3600, ethers.parseEther("10000"));
 
                 await deposit(user1, token1, "0.1");
@@ -412,7 +412,7 @@ describe("Raffle", function () {
         });
 
         describe("upkeep: end game", function () {
-            it("Should end game via automation with correct index", async function () {
+            it("should end game via automation with correct index", async function () {
                 await raffle.setAutomationConfig(2, 24 * 3600, ethers.parseEther("10000"));
 
                 await deposit(user1, token1, "0.1");
