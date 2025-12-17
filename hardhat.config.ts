@@ -3,7 +3,8 @@ import 'solidity-coverage';
 import { HardhatUserConfig } from 'hardhat/config';
 
 import '@nomicfoundation/hardhat-toolbox';
-import { getAlchemyMainnetUrl } from './helpers/alchemy.helpers';
+import { getAlchemyMainnetUrl, getAlchemySepoliaUrl } from './helpers/alchemy.helpers';
+import { latest } from '@nomicfoundation/hardhat-network-helpers/dist/src/helpers/time';
 
 dotenv.config();
 
@@ -16,7 +17,9 @@ function getEnvVar(name: string): string {
 }
 
 const ALCHEMY_API_KEY = getEnvVar('ALCHEMY_API_KEY');
-const PRIVATE_KEY = getEnvVar('PRIVATE_KEY');
+const PRIVATE1_KEY = getEnvVar('PRIVATE1_KEY');
+const PRIVATE2_KEY = getEnvVar('PRIVATE2_KEY');
+const ETHERSCAN_API_KEY = getEnvVar('ETHERSCAN_API_KEY');
 
 const config: HardhatUserConfig = {
   solidity: '0.8.28',
@@ -36,6 +39,14 @@ const config: HardhatUserConfig = {
       // ],
       initialBaseFeePerGas: 0, // for fork testing
     },
+    sepolia: {
+      chainId: 11155111,
+      url: getAlchemySepoliaUrl(ALCHEMY_API_KEY),
+      accounts: [PRIVATE1_KEY, PRIVATE2_KEY],
+    },
+  },
+  etherscan: {
+    apiKey: ETHERSCAN_API_KEY,
   },
 };
 
