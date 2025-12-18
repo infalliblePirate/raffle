@@ -5,7 +5,7 @@ import "./RaffleKeeper.sol";
 
 // raffleStorage -> raffleGovernance -> raffleCore -> raffleVRF -> raffleKeeper
 // raffleGovernance sets deployed: governor, govToken, timelock
-contract Raffle is RaffleKeeper {
+contract RaffleDao is RaffleKeeper {
     constructor(
         address owner_,
         // governance
