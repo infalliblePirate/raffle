@@ -71,7 +71,7 @@ contract Raffle is
     // For a list of available gas lanes on each network,
     // see https://docs.chain.link/vrf/v2-5/supported-networks
     bytes32 public keyHash =
-        0x3f631d5ec60a0ce8203ca649b3f89f4df96dd01bd96763dbb252c5a3c5590f8a;
+        0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae;
 
     address public constant coordinatorAddr =
         0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B;
@@ -82,10 +82,10 @@ contract Raffle is
     // this limit based on the network that you select, the size of the request,
     // and the processing of the callback request in the fulfillRandomWords()
     // function.
-    uint32 public callbackGasLimit = 60_000;
+    uint32 public callbackGasLimit = 100_000;
 
     // The default is 3, but you can set this higher.
-    uint16 public requestConfirmations = 1;
+    uint16 public requestConfirmations = 3;
 
     // Cannot exceed VRFCoordinatorV2_5.MAX_NUM_WORDS.
     uint32 public numWords = 1;
@@ -355,7 +355,7 @@ contract Raffle is
                 callbackGasLimit: callbackGasLimit,
                 numWords: numWords,
                 extraArgs: VRFV2PlusClient._argsToBytes(
-                    VRFV2PlusClient.ExtraArgsV1({nativePayment: true})
+                    VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
                 )
             })
         );
