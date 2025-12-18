@@ -5,6 +5,7 @@ import { HardhatUserConfig } from 'hardhat/config';
 import '@nomicfoundation/hardhat-toolbox';
 import { getAlchemyMainnetUrl, getAlchemySepoliaUrl } from './helpers/alchemy.helpers';
 import { latest } from '@nomicfoundation/hardhat-network-helpers/dist/src/helpers/time';
+import { version } from 'node:os';
 
 dotenv.config();
 
@@ -22,7 +23,18 @@ const PRIVATE2_KEY = getEnvVar('PRIVATE2_KEY');
 const ETHERSCAN_API_KEY = getEnvVar('ETHERSCAN_API_KEY');
 
 const config: HardhatUserConfig = {
-  solidity: '0.8.28',
+  solidity: {
+    version: '0.8.28',
+    settings: {
+      evmVersion: "cancun",
+      optimizer: {
+        enabled: true
+      }
+    },
+  },
+  sourcify: {
+    enabled: true
+  },
   networks: {
 
     hardhat: {
